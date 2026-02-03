@@ -3,263 +3,217 @@ import time
 import random
 import os
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 
-print("===== ELITE RETAIL RADAR + FLIP AI LIVE =====")
+DISCORD = os.getenv("DISCORD_WEBHOOK")
+EBAY = os.getenv("EBAY_TOKEN")
 
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
-EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
+session = requests.Session()
 
-MIN_PROFIT = 12
-MIN_ROI = 0.30
+session.headers.update({
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "en-GB,en;q=0.9"
+})
 
-SEEN = set()
+SEEN = {}
 
+############################
+# DISCORD
+############################
 
-#########################################
-# EBAY TOKEN
-#########################################
+def ping(msg):
+    try:
+        requests.post(DISCORD, json={"content": msg}, timeout=8)
+    except:
+        print("Discord failed")
 
-def get_ebay_token():
-    url = "https://api.ebay.com/identity/v1/oauth2/token"
+ping("🚀 **ELITE AUTO-SNIPER LIVE** — Hunting flips now.")
 
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
+############################
+# EBAY SOLD DATA
+############################
 
-    data = {
-        "grant_type": "client_credentials",
-        "scope": "https://api.ebay.com/oauth/api_scope"
-    }
-
-    response = requests.post(
-        url,
-        headers=headers,
-        data=data,
-        auth=(EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
-    )
-
-    return response.json()["access_token"]
-
-
-TOKEN = get_ebay_token()
-
-
-#########################################
-# FLIP PROBABILITY ENGINE
-#########################################
-
-def flip_score(avg_price, sales_count, roi):
-
-    score = 0
-
-    # Demand
-    if sales_count > 20:
-        score += 3
-    elif sales_count > 10:
-        score += 2
-    else:
-        score += 1
-
-    # ROI
-    if roi > 0.8:
-        score += 3
-    elif roi > 0.5:
-        score += 2
-    else:
-        score += 1
-
-    # Sweet price band
-    if 20 < avg_price < 120:
-        score += 2
-
-    #################################
-
-    if score >= 7:
-        return "🔥 VERY HIGH FLIP"
-    elif score >= 5:
-        return "⚡ HIGH FLIP"
-    elif score >= 4:
-        return "✅ SOLID"
-    else:
-        return "⚠️ SLOW"
-
-
-#########################################
-# EBAY SOLD SEARCH
-#########################################
-
-def ebay_sold_price(query):
+def ebay_avg(title):
 
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
     headers = {
-        "Authorization": f"Bearer {TOKEN}"
+        "Authorization": f"Bearer {EBAY}"
     }
 
     params = {
-        "q": query,
+        "q": title,
         "filter": "soldItemsOnly:true",
-        "limit": 25
+        "limit": 5
     }
 
-    r = requests.get(url, headers=headers, params=params)
+    try:
+        r = session.get(url, headers=headers, params=params, timeout=6)
+        data = r.json()
 
-    data = r.json()
+        prices = [
+            float(i["price"]["value"])
+            for i in data.get("itemSummaries", [])
+        ]
 
-    prices = []
+        if prices:
+            return sum(prices) / len(prices)
 
-    if "itemSummaries" not in data:
-        return None, 0
-
-    for item in data["itemSummaries"]:
-        try:
-            prices.append(float(item["price"]["value"]))
-        except:
-            pass
-
-    if not prices:
-        return None, 0
-
-    avg = sum(prices) / len(prices)
-
-    return avg, len(prices)
+    except:
+        return None
 
 
-#########################################
-# DISCORD ALERT
-#########################################
+############################
+# FLIP AI
+############################
 
-def send_alert(title, price, avg, profit, roi, url, score):
+def score(retail, ebay):
 
-    message = f"""
-🚨 **{score}**
+    profit = ebay - retail
+    margin = profit / retail * 100
 
-**{title}**
+    s = 0
 
-💷 Store: £{price}
-💰 eBay Avg: £{round(avg,2)}
-📈 Profit: £{round(profit,2)}
-📊 ROI: {round(roi*100)}%
+    if profit > 15: s += 25
+    if profit > 30: s += 25
+    if margin > 25: s += 20
+    if margin > 40: s += 20
+    if ebay > 50: s += 10
 
-{url}
-"""
-
-    requests.post(DISCORD_WEBHOOK, json={"content": message})
+    return s
 
 
-#########################################
-# SCANNER
-#########################################
+def evaluate(title, price, link, store):
 
-def scan_site(site_name, url):
+    key = f"{title}-{price}"
 
-    print(f"Scanning {site_name}...")
+    if key in SEEN:
+        return
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    ebay = ebay_avg(title)
 
-    r = requests.get(url, headers=headers, timeout=12)
+    if not ebay:
+        return
 
-    soup = BeautifulSoup(r.text, "lxml")
+    flip = score(price, ebay)
 
-    products = soup.select(".product, .product-card, li")
+    if flip < 60:
+        return
 
-    for product in products[:40]:
+    profit = ebay - price
+    margin = profit / price * 100
 
-        text = product.get_text(" ", strip=True)
+    SEEN[key] = True
 
-        price = None
+    ping(f"""
+🔥 **FLIP SNIPED — SCORE {flip}/100**
 
-        for word in text.split():
-            if "£" in word:
-                try:
-                    price = float(word.replace("£", "").replace(",", ""))
-                    break
-                except:
-                    pass
+Store: {store}
 
-        if not price or price < 10:
-            continue
+{title}
 
-        title = text[:120]
+Retail: £{price}
+eBay Avg: £{round(ebay,2)}
 
-        if title in SEEN:
-            continue
+Profit: £{round(profit,2)}
+Margin: {round(margin)}%
 
-        avg, sales = ebay_sold_price(title)
-
-        if not avg:
-            continue
-
-        profit = avg * 0.87 - price
-        roi = profit / price
-
-        if profit < MIN_PROFIT or roi < MIN_ROI:
-            continue
-
-        score = flip_score(avg, sales, roi)
-
-        # only alert good flips
-        if "SLOW" in score:
-            continue
-
-        send_alert(title, price, avg, profit, roi, url, score)
-
-        SEEN.add(title)
+{link}
+""")
 
 
-#########################################
-# SITES (NO AMAZON)
-#########################################
+############################
+# SCRAPERS
+############################
 
-SITES = [
+def smyths():
 
-    ("Smyths Toys",
-     "https://www.smythstoys.com/uk/en-gb/search/?text=lego"),
+    print("Scanning Smyths")
 
-    ("Argos",
-     "https://www.argos.co.uk/search/lego/"),
+    url = "https://www.smythstoys.com/uk/en-gb/search/?text=pokemon"
 
-    ("Currys",
-     "https://www.currys.co.uk/search?q=nintendo"),
+    try:
+        r = session.get(url, timeout=8)
+        soup = BeautifulSoup(r.text,"html.parser")
 
-    ("Very",
-     "https://www.very.co.uk/electricals/gaming/e/b/1223.end"),
+        items = soup.select(".product-card")[:6]
 
-    ("GAME",
-     "https://www.game.co.uk/en/games/nintendo-switch-298559"),
+        for i in items:
+
+            title = i.select_one(".product-card__title").text.strip()
+            price = float(i.select_one(".product-card__price").text.replace("£",""))
+            link = "https://www.smythstoys.com" + i.select_one("a")["href"]
+
+            evaluate(title,price,link,"Smyths")
+
+    except:
+        print("Smyths blocked")
+
+
+def argos():
+
+    print("Scanning Argos")
+
+    url = "https://www.argos.co.uk/search/pokemon/"
+
+    try:
+        r = session.get(url, timeout=8)
+        soup = BeautifulSoup(r.text,"html.parser")
+
+        items = soup.select("div[data-test='component-product-card']")[:6]
+
+        for i in items:
+
+            title = i.select_one("h3").text.strip()
+            price = float(i.select_one("[data-test='product-price']").text.replace("£",""))
+            link = "https://argos.co.uk" + i.select_one("a")["href"]
+
+            evaluate(title,price,link,"Argos")
+
+    except:
+        print("Argos blocked")
+
+
+def lego_currys():
+
+    print("Scanning Currys Lego")
+
+    url = "https://www.currys.co.uk/search?q=lego"
+
+    try:
+        r = session.get(url, timeout=8)
+        soup = BeautifulSoup(r.text,"html.parser")
+
+        items = soup.select(".product")[:6]
+
+        for i in items:
+
+            title = i.select_one(".description").text.strip()
+            price = float(i.select_one(".price").text.replace("£",""))
+            link = "https://currys.co.uk" + i.select_one("a")["href"]
+
+            evaluate(title,price,link,"Currys")
+
+    except:
+        print("Currys blocked")
+
+
+############################
+# ENGINE
+############################
+
+stores = [
+    smyths,
+    argos,
+    lego_currys
 ]
-
-
-#########################################
-# HUMAN SLEEP
-#########################################
-
-def human_sleep():
-
-    t = random.randint(120, 420)
-
-    print(f"😴 Sleeping {t}s...")
-    time.sleep(t)
-
-
-#########################################
-# MAIN LOOP
-#########################################
 
 while True:
 
-    try:
+    with ThreadPoolExecutor(max_workers=3) as exe:
+        exe.map(lambda f: f(), stores)
 
-        for site in SITES:
-            scan_site(site[0], site[1])
+    sleep = random.randint(45,90)
 
-        human_sleep()
-
-    except Exception as e:
-
-        print("Error:", e)
-
-        time.sleep(60)
+    print(f"Sleeping {sleep}s")
+    time.sleep(sleep)
