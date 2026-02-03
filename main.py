@@ -160,7 +160,7 @@ def scan_site(site_name, url):
         "User-Agent": "Mozilla/5.0"
     }
 
-    r = requests.get(url, headers=headers, timeout=20)
+    r = requests.get(url, headers=headers, timeout=12)
 
     soup = BeautifulSoup(r.text, "lxml")
 
